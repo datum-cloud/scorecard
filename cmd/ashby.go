@@ -258,16 +258,6 @@ func fetchAllJobs(apiKey string, departments map[string]string) (map[string]ashb
 	return jobs, nil
 }
 
-func getWeekStart(t time.Time) string {
-	// Get Monday of the week
-	weekday := int(t.Weekday())
-	if weekday == 0 {
-		weekday = 7
-	}
-	monday := t.AddDate(0, 0, -(weekday - 1))
-	return monday.Format("2006-01-02")
-}
-
 func runApplicantsByWeek(cmd *cobra.Command, args []string) {
 	apiKey := loadAshbyEnv("ASHBY_API_KEY")
 	outputJSON, _ := cmd.Flags().GetBool("json")
@@ -331,8 +321,8 @@ func runApplicantsByWeek(cmd *cobra.Command, args []string) {
 
 func printJSONGrouped(metrics map[string]*ashbyJobMetrics) {
 	type WeekData struct {
-		Week  string `json:"week"`
-		Count int    `json:"count"`
+		WeekEnding string `json:"week_ending"`
+		Count      int    `json:"count"`
 	}
 	type JobData struct {
 		Department string     `json:"department"`
@@ -341,18 +331,18 @@ func printJSONGrouped(metrics map[string]*ashbyJobMetrics) {
 		Total      int        `json:"total"`
 	}
 
+	allWeeks := getLast4Weeks()
 	var output []JobData
 
 	for _, m := range metrics {
 		var weeks []WeekData
 		total := 0
-		for week, count := range m.WeekCounts {
-			weeks = append(weeks, WeekData{Week: week, Count: count})
+		// Include all weeks, even those with zero count
+		for _, week := range allWeeks {
+			count := m.WeekCounts[week]
+			weeks = append(weeks, WeekData{WeekEnding: weekStartToEnd(week), Count: count})
 			total += count
 		}
-		sort.Slice(weeks, func(i, j int) bool {
-			return weeks[i].Week < weeks[j].Week
-		})
 		output = append(output, JobData{Department: m.Department, Job: m.Title, Weeks: weeks, Total: total})
 	}
 
@@ -365,32 +355,6 @@ func printJSONGrouped(metrics map[string]*ashbyJobMetrics) {
 
 	b, _ := json.MarshalIndent(output, "", "  ")
 	fmt.Println(string(b))
-}
-
-func getLast4Weeks() []string {
-	now := time.Now()
-	currentWeek := getWeekStart(now)
-
-	weeks := make([]string, 4)
-	t, _ := time.Parse("2006-01-02", currentWeek)
-	for i := 0; i < 4; i++ {
-		weeks[3-i] = t.Format("2006-01-02")
-		t = t.AddDate(0, 0, -7)
-	}
-	return weeks
-}
-
-func getLast26Weeks() []string {
-	now := time.Now()
-	currentWeek := getWeekStart(now)
-
-	weeks := make([]string, 26)
-	t, _ := time.Parse("2006-01-02", currentWeek)
-	for i := 0; i < 26; i++ {
-		weeks[25-i] = t.Format("2006-01-02")
-		t = t.AddDate(0, 0, -7)
-	}
-	return weeks
 }
 
 func printHistogram(metrics map[string]*ashbyJobMetrics) {
@@ -474,14 +438,13 @@ func printHistogram(metrics map[string]*ashbyJobMetrics) {
 
 	total := 0
 	for i, week := range weeks {
-		t, _ := time.Parse("2006-01-02", week)
 		count := counts[i]
 		total += count
 		if count > 0 {
 			bar := strings.Repeat("▪", int(float64(count)/float64(maxCount)*30)+1)
-			fmt.Printf("  %s  %3d %s\n", t.Format("Jan 02"), count, bar)
+			fmt.Printf("  %s  %3d %s\n", formatWeekEnd(week), count, bar)
 		} else {
-			fmt.Printf("  %s  %3d\n", t.Format("Jan 02"), count)
+			fmt.Printf("  %s  %3d\n", formatWeekEnd(week), count)
 		}
 	}
 	fmt.Println()
@@ -512,23 +475,12 @@ func printTableGrouped(metrics map[string]*ashbyJobMetrics, totalApps int) {
 		})
 	}
 
-	// Calculate column widths
-	jobColWidth := 35
-	weekColWidth := 10
-
-	// Print header
-	fmt.Printf("%-*s", jobColWidth, "Job")
-	for _, week := range weeks {
-		t, _ := time.Parse("2006-01-02", week)
-		fmt.Printf("%*s", weekColWidth, t.Format("Jan 02"))
-	}
-	fmt.Printf("%*s\n", weekColWidth, "Total")
-
-	// Print separator
-	fmt.Println(strings.Repeat("-", jobColWidth+weekColWidth*5))
+	// Create table
+	table := newWeeklyTable(35, 10, weeks)
+	table.printHeader("Job")
+	table.printSeparator()
 
 	// Print each department and its jobs
-	grandTotal := 0
 	weekTotals := make(map[string]int)
 
 	for _, dept := range depts {
@@ -537,57 +489,30 @@ func printTableGrouped(metrics map[string]*ashbyJobMetrics, totalApps int) {
 		// Print department header
 		fmt.Printf("\n%s\n", dept)
 
-		deptTotal := 0
 		deptWeekTotals := make(map[string]int)
 		for _, job := range jobs {
 			// Truncate job title if too long
 			displayTitle := "  " + job.Title
-			if len(displayTitle) > jobColWidth-2 {
-				displayTitle = displayTitle[:jobColWidth-5] + "..."
+			if len(displayTitle) > table.labelColWidth-2 {
+				displayTitle = displayTitle[:table.labelColWidth-5] + "..."
 			}
-			fmt.Printf("%-*s", jobColWidth, displayTitle)
 
-			jobTotal := 0
+			// Print job row and accumulate totals
+			table.printRow(displayTitle, job.WeekCounts)
+
+			// Update totals
 			for _, week := range weeks {
 				count := job.WeekCounts[week]
-				jobTotal += count
 				weekTotals[week] += count
 				deptWeekTotals[week] += count
-				if count == 0 {
-					fmt.Printf("%*s", weekColWidth, "-")
-				} else {
-					fmt.Printf("%*d", weekColWidth, count)
-				}
 			}
-			fmt.Printf("%*d\n", weekColWidth, jobTotal)
-			deptTotal += jobTotal
 		}
 
 		// Print department subtotal
-		fmt.Printf("%-*s", jobColWidth, "  Subtotal")
-		for _, week := range weeks {
-			if deptWeekTotals[week] == 0 {
-				fmt.Printf("%*s", weekColWidth, "-")
-			} else {
-				fmt.Printf("%*d", weekColWidth, deptWeekTotals[week])
-			}
-		}
-		fmt.Printf("%*d\n", weekColWidth, deptTotal)
-
-		grandTotal += deptTotal
+		table.printRow("  Subtotal", deptWeekTotals)
 	}
 
-	// Print separator
-	fmt.Println(strings.Repeat("-", jobColWidth+weekColWidth*5))
-
-	// Print totals row
-	fmt.Printf("%-*s", jobColWidth, "Total")
-	for _, week := range weeks {
-		if weekTotals[week] == 0 {
-			fmt.Printf("%*s", weekColWidth, "-")
-		} else {
-			fmt.Printf("%*d", weekColWidth, weekTotals[week])
-		}
-	}
-	fmt.Printf("%*d\n", weekColWidth, grandTotal)
+	// Print totals
+	table.printSeparator()
+	table.printTotalsRow("Total", weekTotals)
 }

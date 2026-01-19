@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -106,62 +105,30 @@ func runIncidents(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Print results with dates as columns
-	labelColWidth := 20
-	weekColWidth := 10
-
+	// Print results using shared table functions
 	fmt.Printf("Incident Counts for %s (Last 4 Weeks)\n\n", repo)
 
-	// Print header with week ending dates (Sundays)
-	fmt.Printf("%-*s", labelColWidth, "Label")
-	for _, week := range weeks {
-		fmt.Printf("%*s", weekColWidth, formatWeekEnd(week))
+	table := newWeeklyTable(20, 10, weeks)
+	table.printHeader("Label")
+	table.printSeparator()
+
+	// Extract counts into slices
+	issuesCounts := make([]int, len(counts))
+	reportsCounts := make([]int, len(counts))
+	totalCounts := make([]int, len(counts))
+	for i, c := range counts {
+		issuesCounts[i] = c.IncidentIssues
+		reportsCounts[i] = c.IncidentReports
+		totalCounts[i] = c.IncidentIssues + c.IncidentReports
 	}
-	fmt.Printf("%*s\n", weekColWidth, "Total")
 
-	// Print separator
-	fmt.Println(strings.Repeat("-", labelColWidth+weekColWidth*5))
+	// Print rows
+	table.printRowWithSlice(":incident/issue", issuesCounts)
+	table.printRowWithSlice(":incident/report", reportsCounts)
 
-	// Print :incident/issue row
-	totalIssues := 0
-	fmt.Printf("%-*s", labelColWidth, ":incident/issue")
-	for _, c := range counts {
-		if c.IncidentIssues == 0 {
-			fmt.Printf("%*s", weekColWidth, "-")
-		} else {
-			fmt.Printf("%*d", weekColWidth, c.IncidentIssues)
-		}
-		totalIssues += c.IncidentIssues
-	}
-	fmt.Printf("%*d\n", weekColWidth, totalIssues)
-
-	// Print :incident/report row
-	totalReports := 0
-	fmt.Printf("%-*s", labelColWidth, ":incident/report")
-	for _, c := range counts {
-		if c.IncidentReports == 0 {
-			fmt.Printf("%*s", weekColWidth, "-")
-		} else {
-			fmt.Printf("%*d", weekColWidth, c.IncidentReports)
-		}
-		totalReports += c.IncidentReports
-	}
-	fmt.Printf("%*d\n", weekColWidth, totalReports)
-
-	// Print separator
-	fmt.Println(strings.Repeat("-", labelColWidth+weekColWidth*5))
-
-	// Print totals row
-	fmt.Printf("%-*s", labelColWidth, "Total")
-	for _, c := range counts {
-		total := c.IncidentIssues + c.IncidentReports
-		if total == 0 {
-			fmt.Printf("%*s", weekColWidth, "-")
-		} else {
-			fmt.Printf("%*d", weekColWidth, total)
-		}
-	}
-	fmt.Printf("%*d\n", weekColWidth, totalIssues+totalReports)
+	// Print totals
+	table.printSeparator()
+	table.printRowWithSlice("Total", totalCounts)
 
 	return nil
 }
