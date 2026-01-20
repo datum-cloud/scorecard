@@ -17,6 +17,10 @@ Alternative: `nix build` if using Nix.
 - `GITHUB_TOKEN` - GitHub personal access token (for `github` and `incidents` commands)
 - `ASHBY_API_KEY` - Ashby HQ API key (for `ashby` commands)
 
+## External Dependencies
+
+- `datumctl` - Datum Cloud CLI, must be authenticated (`datumctl auth login`) for `datum` commands
+
 ## Architecture
 
 This is a Go CLI tool built with Cobra for collecting KPI metrics from external APIs.
@@ -27,6 +31,7 @@ This is a Go CLI tool built with Cobra for collecting KPI metrics from external 
 - `cmd/github.go` - GitHub stars subcommand (`github stars <org>`)
 - `cmd/incidents.go` - GitHub incidents tracking (`incidents <org/repo>`)
 - `cmd/ashby.go` - Ashby HQ recruiting metrics (`ashby applicants-by-week`)
+- `cmd/datum.go` - Datum Cloud metrics (`datum active-users`), shells out to `datumctl`
 
 ### Shared Utilities
 
