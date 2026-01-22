@@ -325,13 +325,15 @@ func printJSONGrouped(metrics map[string]*ashbyJobMetrics) {
 		Count      int    `json:"count"`
 	}
 	type JobData struct {
-		Department string     `json:"department"`
-		Job        string     `json:"job"`
-		Weeks      []WeekData `json:"weeks"`
-		Total      int        `json:"total"`
+		Department  string   `json:"department"`
+		Job         string   `json:"job"`
+		Weeks       []WeekData `json:"weeks"`
+		CurrentWeek WeekData `json:"current_week"`
+		Total       int      `json:"total"`
 	}
 
 	allWeeks := getLast4Weeks()
+	currentWeek := getCurrentWeekStart()
 	var output []JobData
 
 	for _, m := range metrics {
@@ -343,7 +345,13 @@ func printJSONGrouped(metrics map[string]*ashbyJobMetrics) {
 			weeks = append(weeks, WeekData{WeekEnding: weekStartToEnd(week), Count: count})
 			total += count
 		}
-		output = append(output, JobData{Department: m.Department, Job: m.Title, Weeks: weeks, Total: total})
+		output = append(output, JobData{
+			Department: m.Department,
+			Job: m.Title,
+			Weeks: weeks,
+			CurrentWeek: WeekData{WeekEnding: weekStartToEnd(currentWeek), Count: m.WeekCounts[currentWeek]},
+			Total: total,
+		})
 	}
 
 	sort.Slice(output, func(i, j int) bool {
@@ -454,6 +462,7 @@ func printHistogram(metrics map[string]*ashbyJobMetrics) {
 
 func printTableGrouped(metrics map[string]*ashbyJobMetrics, totalApps int) {
 	weeks := getLast4Weeks()
+	currentWeek := getCurrentWeekStart()
 
 	// Group jobs by department
 	deptJobs := make(map[string][]*ashbyJobMetrics)
@@ -477,8 +486,8 @@ func printTableGrouped(metrics map[string]*ashbyJobMetrics, totalApps int) {
 
 	// Create table
 	table := newWeeklyTable(35, 10, weeks)
-	table.printHeader("Job")
-	table.printSeparator()
+	table.printHeader("Job", currentWeek)
+	table.printSeparator(currentWeek)
 
 	// Print each department and its jobs
 	weekTotals := make(map[string]int)
@@ -498,7 +507,7 @@ func printTableGrouped(metrics map[string]*ashbyJobMetrics, totalApps int) {
 			}
 
 			// Print job row and accumulate totals
-			table.printRow(displayTitle, job.WeekCounts)
+			table.printRow(displayTitle, job.WeekCounts, currentWeek)
 
 			// Update totals
 			for _, week := range weeks {
@@ -506,13 +515,16 @@ func printTableGrouped(metrics map[string]*ashbyJobMetrics, totalApps int) {
 				weekTotals[week] += count
 				deptWeekTotals[week] += count
 			}
+			// Add current week to totals
+			deptWeekTotals[currentWeek] += job.WeekCounts[currentWeek]
+			weekTotals[currentWeek] += job.WeekCounts[currentWeek]
 		}
 
 		// Print department subtotal
-		table.printRow("  Subtotal", deptWeekTotals)
+		table.printRow("  Subtotal", deptWeekTotals, currentWeek)
 	}
 
 	// Print totals
-	table.printSeparator()
-	table.printTotalsRow("Total", weekTotals)
+	table.printSeparator(currentWeek)
+	table.printTotalsRow("Total", weekTotals, currentWeek)
 }
