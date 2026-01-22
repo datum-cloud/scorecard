@@ -56,8 +56,9 @@ func runIncidents(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("GITHUB_TOKEN environment variable not set")
 	}
 
-	// Calculate last 4 week boundaries
+	// Calculate last 4 week boundaries plus current week
 	weeks := getLast4Weeks()
+	currentWeek := getCurrentWeekStart()
 
 	fmt.Fprintf(os.Stderr, "Fetching incidents for %s...\n", repo)
 
@@ -77,23 +78,32 @@ func runIncidents(cmd *cobra.Command, args []string) error {
 	for i, week := range weeks {
 		counts[i].WeekStart = week
 	}
+	currentCounts := weeklyIncidentCounts{WeekStart: currentWeek}
 
 	for _, issue := range incidentIssues {
 		weekStart := getWeekStart(issue.CreatedAt)
-		for i, week := range weeks {
-			if weekStart == week {
-				counts[i].IncidentIssues++
-				break
+		if weekStart == currentWeek {
+			currentCounts.IncidentIssues++
+		} else {
+			for i, week := range weeks {
+				if weekStart == week {
+					counts[i].IncidentIssues++
+					break
+				}
 			}
 		}
 	}
 
 	for _, issue := range incidentReports {
 		weekStart := getWeekStart(issue.CreatedAt)
-		for i, week := range weeks {
-			if weekStart == week {
-				counts[i].IncidentReports++
-				break
+		if weekStart == currentWeek {
+			currentCounts.IncidentReports++
+		} else {
+			for i, week := range weeks {
+				if weekStart == week {
+					counts[i].IncidentReports++
+					break
+				}
 			}
 		}
 	}
@@ -101,7 +111,7 @@ func runIncidents(cmd *cobra.Command, args []string) error {
 	// Check for JSON output
 	outputJSON, _ := cmd.Flags().GetBool("json")
 	if outputJSON {
-		printIncidentsJSON(repo, weeks, counts)
+		printIncidentsJSON(repo, weeks, counts, currentWeek, currentCounts)
 		return nil
 	}
 
@@ -109,8 +119,8 @@ func runIncidents(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Incident Counts for %s (Last 4 Weeks)\n\n", repo)
 
 	table := newWeeklyTable(20, 10, weeks)
-	table.printHeader("Label")
-	table.printSeparator()
+	table.printHeader("Label", currentWeek)
+	table.printSeparator(currentWeek)
 
 	// Extract counts into slices
 	issuesCounts := make([]int, len(counts))
@@ -123,12 +133,12 @@ func runIncidents(cmd *cobra.Command, args []string) error {
 	}
 
 	// Print rows
-	table.printRowWithSlice(":incident/issue", issuesCounts)
-	table.printRowWithSlice(":incident/report", reportsCounts)
+	table.printRowWithSlice(":incident/issue", issuesCounts, currentCounts.IncidentIssues)
+	table.printRowWithSlice(":incident/report", reportsCounts, currentCounts.IncidentReports)
 
 	// Print totals
-	table.printSeparator()
-	table.printRowWithSlice("Total", totalCounts)
+	table.printSeparator(currentWeek)
+	table.printRowWithSlice("Total", totalCounts, currentCounts.IncidentIssues+currentCounts.IncidentReports)
 
 	return nil
 }
@@ -190,7 +200,7 @@ func fetchIncidentIssues(token, repo, label string) ([]githubIssue, error) {
 	return allIssues, nil
 }
 
-func printIncidentsJSON(repo string, weeks []string, counts []weeklyIncidentCounts) {
+func printIncidentsJSON(repo string, weeks []string, counts []weeklyIncidentCounts, currentWeek string, currentCounts weeklyIncidentCounts) {
 	type WeekData struct {
 		WeekEnding     string `json:"week_ending"`
 		IncidentIssue  int    `json:"incident_issue"`
@@ -198,9 +208,10 @@ func printIncidentsJSON(repo string, weeks []string, counts []weeklyIncidentCoun
 		Total          int    `json:"total"`
 	}
 	type Output struct {
-		Repository string     `json:"repository"`
-		Weeks      []WeekData `json:"weeks"`
-		Totals     struct {
+		Repository  string     `json:"repository"`
+		Weeks       []WeekData `json:"weeks"`
+		CurrentWeek WeekData   `json:"current_week"`
+		Totals      struct {
 			IncidentIssue  int `json:"incident_issue"`
 			IncidentReport int `json:"incident_report"`
 			Total          int `json:"total"`
@@ -222,6 +233,13 @@ func printIncidentsJSON(repo string, weeks []string, counts []weeklyIncidentCoun
 		output.Totals.IncidentReport += counts[i].IncidentReports
 	}
 	output.Totals.Total = output.Totals.IncidentIssue + output.Totals.IncidentReport
+
+	output.CurrentWeek = WeekData{
+		WeekEnding:     weekStartToEnd(currentWeek),
+		IncidentIssue:  currentCounts.IncidentIssues,
+		IncidentReport: currentCounts.IncidentReports,
+		Total:          currentCounts.IncidentIssues + currentCounts.IncidentReports,
+	}
 
 	b, _ := json.MarshalIndent(output, "", "  ")
 	fmt.Println(string(b))

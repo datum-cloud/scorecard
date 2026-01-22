@@ -61,6 +61,11 @@ func getLast4Weeks() []string {
 	return getLastNWeeks(4)
 }
 
+// getCurrentWeekStart returns the Monday of the current (in-progress) week.
+func getCurrentWeekStart() string {
+	return getWeekStart(time.Now())
+}
+
 // getLast26Weeks returns the last 26 completed weeks (6 months), oldest first.
 func getLast26Weeks() []string {
 	return getLastNWeeks(26)
