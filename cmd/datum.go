@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -18,14 +20,14 @@ var datumCmd = &cobra.Command{
 
 var activeUsersCmd = &cobra.Command{
 	Use:   "active-users",
-	Short: "Count users who have created or modified resources in the last week",
+	Short: "Count active users by week over the last 4 weeks",
 	Long: `Query Datum Cloud audit logs to count unique users who have created or modified
-resources over the last week.
+resources, broken down by week over the last 4 completed weeks.
 
 Requires datumctl to be installed and authenticated (run 'datumctl auth login').
 
 Active users are those who performed create, update, or patch operations.
-System accounts (prefixed with 'system:') are excluded from the count.`,
+System accounts are excluded from the count.`,
 	RunE: runActiveUsers,
 }
 
@@ -33,6 +35,7 @@ func init() {
 	rootCmd.AddCommand(datumCmd)
 	datumCmd.AddCommand(activeUsersCmd)
 	activeUsersCmd.Flags().Bool("json", false, "Output in JSON format")
+	activeUsersCmd.Flags().Int("limit", 0, "Limit number of audit events to fetch (0 = all)")
 }
 
 type auditEvent struct {
@@ -48,24 +51,57 @@ type auditQueryResult struct {
 	Items []auditEvent `json:"items"`
 }
 
-func runActiveUsers(cmd *cobra.Command, args []string) error {
-	outputJSON, _ := cmd.Flags().GetBool("json")
-
-	// Check if datumctl is available
-	if _, err := exec.LookPath("datumctl"); err != nil {
-		return fmt.Errorf("datumctl not found in PATH: %w", err)
+func findDatumctl() (string, error) {
+	// Prefer ~/bin/datumctl if it exists
+	home, err := os.UserHomeDir()
+	if err == nil {
+		customPath := filepath.Join(home, "bin", "datumctl")
+		if _, err := os.Stat(customPath); err == nil {
+			return customPath, nil
+		}
 	}
 
-	fmt.Fprintln(os.Stderr, "Querying Datum Cloud audit logs for the last week...")
+	// Fall back to PATH
+	path, err := exec.LookPath("datumctl")
+	if err != nil {
+		return "", fmt.Errorf("datumctl not found in ~/bin or PATH")
+	}
+	return path, nil
+}
 
-	// Query audit logs for create/update/patch operations in the last week
-	queryCmd := exec.Command("datumctl", "activity", "query",
-		"--start-time", "now-7d",
+func runActiveUsers(cmd *cobra.Command, args []string) error {
+	outputJSON, _ := cmd.Flags().GetBool("json")
+	limit, _ := cmd.Flags().GetInt("limit")
+
+	datumctl, err := findDatumctl()
+	if err != nil {
+		return err
+	}
+
+	weeks := getLast4Weeks()
+	if len(weeks) == 0 {
+		return fmt.Errorf("failed to calculate weeks")
+	}
+	currentWeek := getCurrentWeekStart()
+
+	fmt.Fprintln(os.Stderr, "Querying Datum Cloud audit logs for the last 4 weeks...")
+
+	// Query audit logs for the last ~30 days (covers 4 weeks + current week)
+	// Filter for write operations by real users (excluding system accounts)
+	filter := "verb in ['create', 'update', 'patch'] && user.username.contains('system:') == false && user.uid != '' && objectRef.apiGroup in ['activity.miloapis.com'] == false"
+	queryArgs := []string{"activity", "query",
+		"--platform-wide",
+		"--start-time", "now-30d",
 		"--end-time", "now",
-		"--filter", "verb in ['create', 'update', 'patch']",
-		"--all-pages",
+		"--filter", filter,
 		"-o", "json",
-	)
+	}
+	if limit > 0 {
+		queryArgs = append(queryArgs, "--limit", fmt.Sprintf("%d", limit))
+	} else {
+		queryArgs = append(queryArgs, "--all-pages")
+	}
+	queryCmd := exec.Command(datumctl, queryArgs...)
 
 	output, err := queryCmd.Output()
 	if err != nil {
@@ -88,49 +124,79 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to parse audit log response: %w", err)
 	}
 
-	// Count unique users, excluding system accounts
-	userSet := make(map[string]struct{})
+	// Group users by week (including current week)
+	weekUsers := make(map[string]map[string]struct{})
+	for _, week := range weeks {
+		weekUsers[week] = make(map[string]struct{})
+	}
+	weekUsers[currentWeek] = make(map[string]struct{})
+
 	for _, event := range result.Items {
 		username := event.User.Username
-		// Skip system accounts
-		if strings.HasPrefix(username, "system:") {
+		if username == "" {
 			continue
 		}
-		if username != "" {
-			userSet[username] = struct{}{}
+
+		// Parse timestamp and get week
+		t, err := time.Parse(time.RFC3339, event.RequestReceivedTimestamp)
+		if err != nil {
+			continue
+		}
+		weekStart := getWeekStart(t)
+
+		// Only count if this week is in our range
+		if users, ok := weekUsers[weekStart]; ok {
+			users[username] = struct{}{}
 		}
 	}
 
-	activeUserCount := len(userSet)
+	// Count unique users per week
+	weekCounts := make(map[string]int)
+	allUsers := make(map[string]struct{})
+	for week, users := range weekUsers {
+		weekCounts[week] = len(users)
+		for user := range users {
+			allUsers[user] = struct{}{}
+		}
+	}
 
 	if outputJSON {
+		type WeekData struct {
+			WeekEnding  string `json:"week_ending"`
+			ActiveUsers int    `json:"active_users"`
+		}
 		type jsonOutput struct {
-			ActiveUsers int      `json:"active_users"`
-			Period      string   `json:"period"`
-			Users       []string `json:"users"`
+			Weeks       []WeekData `json:"weeks"`
+			CurrentWeek WeekData   `json:"current_week"`
+			TotalUsers  int        `json:"total_unique_users"`
 		}
 
-		users := make([]string, 0, len(userSet))
-		for user := range userSet {
-			users = append(users, user)
+		var weeksData []WeekData
+		for _, week := range weeks {
+			weeksData = append(weeksData, WeekData{
+				WeekEnding:  weekStartToEnd(week),
+				ActiveUsers: weekCounts[week],
+			})
 		}
 
 		out := jsonOutput{
-			ActiveUsers: activeUserCount,
-			Period:      "last 7 days",
-			Users:       users,
+			Weeks: weeksData,
+			CurrentWeek: WeekData{
+				WeekEnding:  weekStartToEnd(currentWeek),
+				ActiveUsers: weekCounts[currentWeek],
+			},
+			TotalUsers: len(allUsers),
 		}
 
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
 	} else {
-		fmt.Printf("Active Users (Last 7 Days): %d\n", activeUserCount)
-		if activeUserCount > 0 {
-			fmt.Println("\nUsers:")
-			for user := range userSet {
-				fmt.Printf("  - %s\n", user)
-			}
-		}
+		table := newWeeklyTable(20, 10, weeks)
+		table.printHeader("Metric", currentWeek)
+		table.printSeparator(currentWeek)
+		table.printRow("Active Users", weekCounts, currentWeek)
+		table.printSeparator(currentWeek)
+		fmt.Printf("\nTotal Unique Users: %d\n", len(allUsers))
 	}
 
 	return nil
