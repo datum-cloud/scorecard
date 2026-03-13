@@ -162,8 +162,8 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(os.Stderr, "Querying Datum Cloud audit logs for the last 4 weeks...")
 
 	// Query audit logs for the last ~30 days (covers 4 weeks + current week)
-	// Filter for write operations by real users (excluding system accounts)
-	filter := "verb in ['create', 'update', 'patch'] && user.username.contains('system:') == false && user.uid != '' && objectRef.apiGroup in ['activity.miloapis.com'] == false"
+	// Filter for write operations by real users (excluding system accounts and auto-provisioned personal resources)
+	filter := "verb in ['create', 'update', 'patch'] && user.username.contains('system:') == false && objectRef.name.startsWith('personal-project-') == false && objectRef.name.startsWith('personal-org-') == false"
 	queryArgs := []string{"activity", "query",
 		"--platform-wide",
 		"--start-time", "now-30d",
@@ -207,14 +207,14 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 	weekUsers[currentWeek] = make(map[string]struct{})
 
 	type userActivity struct {
-		UID          string
+		Username     string
 		LastActivity time.Time
 	}
-	userActivities := make(map[string]userActivity) // username -> activity info
+	userActivities := make(map[string]userActivity) // uid -> activity info
 
 	for _, event := range result.Items {
-		username := event.User.Username
-		if username == "" {
+		uid := event.User.UID
+		if uid == "" {
 			continue
 		}
 
@@ -224,14 +224,12 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		// Track last activity time for this user
-		if event.User.UID != "" {
-			existing := userActivities[username]
-			if existing.LastActivity.IsZero() || t.After(existing.LastActivity) {
-				userActivities[username] = userActivity{
-					UID:          event.User.UID,
-					LastActivity: t,
-				}
+		// Track last activity time for this user (keyed by UID to deduplicate)
+		existing := userActivities[uid]
+		if existing.LastActivity.IsZero() || t.After(existing.LastActivity) {
+			userActivities[uid] = userActivity{
+				Username:     event.User.Username,
+				LastActivity: t,
 			}
 		}
 
@@ -239,7 +237,7 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 
 		// Only count if this week is in our range
 		if users, ok := weekUsers[weekStart]; ok {
-			users[username] = struct{}{}
+			users[uid] = struct{}{}
 		}
 	}
 
@@ -259,9 +257,8 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, "Looking up user details...")
 		allUserDetails := fetchAllUsers(datumctl)
 
-		for username := range allUsers {
-			activity := userActivities[username]
-			uid := activity.UID
+		for uid := range allUsers {
+			activity := userActivities[uid]
 			lastActivity := activity.LastActivity
 
 			var info userInfo
@@ -276,7 +273,7 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 			// Fall back to audit event data
 			activeUserList = append(activeUserList, userInfo{
 				UID:          uid,
-				Email:        username,
+				Email:        activity.Username,
 				LastActivity: lastActivity,
 			})
 		}
