@@ -164,7 +164,7 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 	// Query audit logs for the last ~30 days (covers 4 weeks + current week)
 	// Filter for write operations by real users (excluding system accounts)
 	filter := "verb in ['create', 'update', 'patch'] && user.username.contains('system:') == false && user.uid != '' && objectRef.apiGroup in ['activity.miloapis.com'] == false"
-	queryArgs := []string{"activity", "query",
+	queryArgs := []string{"activity", "audit",
 		"--platform-wide",
 		"--start-time", "now-30d",
 		"--end-time", "now",
@@ -396,7 +396,7 @@ func runSignups(cmd *cobra.Command, args []string) error {
 		// In debug mode, use a broader filter to see all create events
 		filter = "verb == 'create' && user.username.contains('system:') == false"
 	}
-	queryArgs := []string{"activity", "query",
+	queryArgs := []string{"activity", "audit",
 		"--platform-wide",
 		"--start-time", startTime,
 		"--end-time", endTime,
