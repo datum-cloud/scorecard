@@ -104,7 +104,7 @@ func findDatumctl() (string, error) {
 // fetchAllUsers fetches all user details from Datum Cloud via datumctl.
 // Returns a map of UID to userInfo, or nil if the fetch fails.
 func fetchAllUsers(datumctl string) map[string]userInfo {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, datumctl, "get", "users", "-o", "json", "--platform-wide")
 	output, err := cmd.Output()
