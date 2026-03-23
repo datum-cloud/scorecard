@@ -162,8 +162,9 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(os.Stderr, "Querying Datum Cloud audit logs for the last 4 weeks...")
 
 	// Query audit logs for the last ~30 days (covers 4 weeks + current week)
-	// Filter for write operations by real users (excluding system accounts and auto-provisioned personal resources)
-	filter := "verb in ['create', 'update', 'patch'] && user.username.contains('system:') == false && user.uid != '' && objectRef.apiGroup in ['activity.miloapis.com'] == false && objectRef.name.startsWith('personal-project-') == false && objectRef.name.startsWith('personal-org-') == false"
+	// Filter for write operations by real users (excluding system accounts)
+	// Note: personal-project-* and personal-org-* resources are filtered client-side below
+	filter := "verb in ['create', 'update', 'patch'] && user.username.contains('system:') == false && user.uid != '' && objectRef.apiGroup in ['activity.miloapis.com'] == false"
 	queryArgs := []string{"activity", "audit",
 		"--platform-wide",
 		"--start-time", "now-30d",
@@ -215,6 +216,11 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 	for _, event := range result.Items {
 		uid := event.User.UID
 		if uid == "" {
+			continue
+		}
+
+		// Exclude auto-provisioned personal resources
+		if strings.HasPrefix(event.ObjectRef.Name, "personal-project-") || strings.HasPrefix(event.ObjectRef.Name, "personal-org-") {
 			continue
 		}
 
