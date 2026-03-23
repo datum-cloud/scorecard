@@ -118,12 +118,10 @@ func fetchAllUsers(datumctl string) map[string]userInfo {
 				Name string `json:"name"`
 			} `json:"metadata"`
 			Spec struct {
-				Email string `json:"email"`
+				Email      string `json:"email"`
+				GivenName  string `json:"givenName"`
+				FamilyName string `json:"familyName"`
 			} `json:"spec"`
-			Status struct {
-				DisplayName string `json:"displayName"`
-				Email       string `json:"email"`
-			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
@@ -133,12 +131,8 @@ func fetchAllUsers(datumctl string) map[string]userInfo {
 	users := make(map[string]userInfo)
 	for _, item := range result.Items {
 		uid := item.Metadata.Name
-		name := item.Status.DisplayName
-		email := item.Status.Email
-		if email == "" {
-			email = item.Spec.Email
-		}
-		users[uid] = userInfo{UID: uid, Name: name, Email: email}
+		name := strings.TrimSpace(item.Spec.GivenName + " " + item.Spec.FamilyName)
+		users[uid] = userInfo{UID: uid, Name: name, Email: item.Spec.Email}
 	}
 	return users
 }
