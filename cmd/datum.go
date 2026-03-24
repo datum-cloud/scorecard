@@ -178,9 +178,7 @@ func runUsers(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Total Users: %d\n", len(allUsers))
 	for _, status := range []string{"Approved", "Pending", "Rejected"} {
-		if n, ok := counts[status]; ok {
-			fmt.Printf("  %-10s %d\n", status+":", n)
-		}
+		fmt.Printf("  %-10s %d\n", status+":", counts[status])
 	}
 	// Print any unexpected statuses
 	for status, n := range counts {
