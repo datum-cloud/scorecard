@@ -33,6 +33,15 @@ System accounts are excluded from the count.`,
 	RunE: runActiveUsers,
 }
 
+var usersCmd = &cobra.Command{
+	Use:   "users",
+	Short: "Count all users on the platform",
+	Long: `Fetch and count all user accounts on the Datum Cloud platform.
+
+Requires datumctl to be installed and authenticated (run 'datumctl auth login').`,
+	RunE: runUsers,
+}
+
 var signupsCmd = &cobra.Command{
 	Use:   "signups",
 	Short: "Count new user signups by week over the last 4 weeks",
@@ -48,7 +57,9 @@ Counts user signups tracked as PATCH operations on users by zitadel-actions-serv
 func init() {
 	rootCmd.AddCommand(datumCmd)
 	datumCmd.AddCommand(activeUsersCmd)
+	datumCmd.AddCommand(usersCmd)
 	datumCmd.AddCommand(signupsCmd)
+	usersCmd.Flags().Bool("list", false, "Print list of all users with details")
 	activeUsersCmd.Flags().Bool("json", false, "Output in JSON format")
 	activeUsersCmd.Flags().Int("limit", 0, "Limit number of audit events to fetch (0 = all)")
 	activeUsersCmd.Flags().Bool("list", false, "Print list of active users with details after the table")
@@ -135,6 +146,45 @@ func fetchAllUsers(datumctl string) map[string]userInfo {
 		users[uid] = userInfo{UID: uid, Name: name, Email: item.Spec.Email}
 	}
 	return users
+}
+
+func runUsers(cmd *cobra.Command, args []string) error {
+	listUsers, _ := cmd.Flags().GetBool("list")
+
+	datumctl, err := findDatumctl()
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(os.Stderr, "Fetching all platform users...")
+	allUsers := fetchAllUsers(datumctl)
+	if allUsers == nil {
+		return fmt.Errorf("failed to fetch users")
+	}
+
+	fmt.Printf("Total Users: %d\n", len(allUsers))
+
+	if listUsers {
+		users := make([]userInfo, 0, len(allUsers))
+		for _, u := range allUsers {
+			users = append(users, u)
+		}
+		sort.Slice(users, func(i, j int) bool {
+			return users[i].Email < users[j].Email
+		})
+		fmt.Println()
+		fmt.Printf("%-24s %-30s %s\n", "User ID", "Name", "Email")
+		fmt.Println(strings.Repeat("-", 90))
+		for _, u := range users {
+			name := u.Name
+			if name == "" {
+				name = "-"
+			}
+			fmt.Printf("%-24s %-30s %s\n", u.UID, name, u.Email)
+		}
+	}
+
+	return nil
 }
 
 func runActiveUsers(cmd *cobra.Command, args []string) error {
