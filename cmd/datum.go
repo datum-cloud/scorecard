@@ -88,10 +88,11 @@ type auditQueryResult struct {
 }
 
 type userInfo struct {
-	UID          string    `json:"uid"`
-	Name         string    `json:"name"`
-	Email        string    `json:"email"`
-	LastActivity time.Time `json:"last_activity,omitempty"`
+	UID                  string    `json:"uid"`
+	Name                 string    `json:"name"`
+	Email                string    `json:"email"`
+	RegistrationApproval string    `json:"registration_approval,omitempty"`
+	LastActivity         time.Time `json:"last_activity,omitempty"`
 }
 
 func findDatumctl() (string, error) {
@@ -133,6 +134,9 @@ func fetchAllUsers(datumctl string) map[string]userInfo {
 				GivenName  string `json:"givenName"`
 				FamilyName string `json:"familyName"`
 			} `json:"spec"`
+			Status struct {
+				RegistrationApproval string `json:"registrationApproval"`
+			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
@@ -143,7 +147,7 @@ func fetchAllUsers(datumctl string) map[string]userInfo {
 	for _, item := range result.Items {
 		uid := item.Metadata.Name
 		name := strings.TrimSpace(item.Spec.GivenName + " " + item.Spec.FamilyName)
-		users[uid] = userInfo{UID: uid, Name: name, Email: item.Spec.Email}
+		users[uid] = userInfo{UID: uid, Name: name, Email: item.Spec.Email, RegistrationApproval: item.Status.RegistrationApproval}
 	}
 	return users
 }
@@ -162,7 +166,28 @@ func runUsers(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to fetch users")
 	}
 
+	// Count by registration approval status
+	counts := make(map[string]int)
+	for _, u := range allUsers {
+		status := u.RegistrationApproval
+		if status == "" {
+			status = "Unknown"
+		}
+		counts[status]++
+	}
+
 	fmt.Printf("Total Users: %d\n", len(allUsers))
+	for _, status := range []string{"Approved", "Pending", "Rejected"} {
+		if n, ok := counts[status]; ok {
+			fmt.Printf("  %-10s %d\n", status+":", n)
+		}
+	}
+	// Print any unexpected statuses
+	for status, n := range counts {
+		if status != "Approved" && status != "Pending" && status != "Rejected" {
+			fmt.Printf("  %-10s %d\n", status+":", n)
+		}
+	}
 
 	if listUsers {
 		users := make([]userInfo, 0, len(allUsers))
@@ -170,17 +195,20 @@ func runUsers(cmd *cobra.Command, args []string) error {
 			users = append(users, u)
 		}
 		sort.Slice(users, func(i, j int) bool {
+			if users[i].RegistrationApproval != users[j].RegistrationApproval {
+				return users[i].RegistrationApproval < users[j].RegistrationApproval
+			}
 			return users[i].Email < users[j].Email
 		})
 		fmt.Println()
-		fmt.Printf("%-24s %-30s %s\n", "User ID", "Name", "Email")
-		fmt.Println(strings.Repeat("-", 90))
+		fmt.Printf("%-24s %-30s %-12s %s\n", "User ID", "Name", "Status", "Email")
+		fmt.Println(strings.Repeat("-", 100))
 		for _, u := range users {
 			name := u.Name
 			if name == "" {
 				name = "-"
 			}
-			fmt.Printf("%-24s %-30s %s\n", u.UID, name, u.Email)
+			fmt.Printf("%-24s %-30s %-12s %s\n", u.UID, name, u.RegistrationApproval, u.Email)
 		}
 	}
 
