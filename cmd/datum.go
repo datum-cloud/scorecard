@@ -104,7 +104,7 @@ func findDatumctl() (string, error) {
 // fetchAllUsers fetches all user details from Datum Cloud via datumctl.
 // Returns a map of UID to userInfo, or nil if the fetch fails.
 func fetchAllUsers(datumctl string) map[string]userInfo {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, datumctl, "get", "users", "-o", "json", "--platform-wide")
 	output, err := cmd.Output()
@@ -118,12 +118,10 @@ func fetchAllUsers(datumctl string) map[string]userInfo {
 				Name string `json:"name"`
 			} `json:"metadata"`
 			Spec struct {
-				Email string `json:"email"`
+				Email      string `json:"email"`
+				GivenName  string `json:"givenName"`
+				FamilyName string `json:"familyName"`
 			} `json:"spec"`
-			Status struct {
-				DisplayName string `json:"displayName"`
-				Email       string `json:"email"`
-			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
@@ -133,14 +131,39 @@ func fetchAllUsers(datumctl string) map[string]userInfo {
 	users := make(map[string]userInfo)
 	for _, item := range result.Items {
 		uid := item.Metadata.Name
-		name := item.Status.DisplayName
-		email := item.Status.Email
-		if email == "" {
-			email = item.Spec.Email
-		}
-		users[uid] = userInfo{UID: uid, Name: name, Email: email}
+		name := strings.TrimSpace(item.Spec.GivenName + " " + item.Spec.FamilyName)
+		users[uid] = userInfo{UID: uid, Name: name, Email: item.Spec.Email}
 	}
 	return users
+}
+
+// fetchDeletedUsers queries audit logs for user delete events and returns a set of deleted UIDs.
+// The objectRef.name on a user delete event is the user's resource name (their UID).
+func fetchDeletedUsers(datumctl string) map[string]struct{} {
+	filter := "verb == 'delete' && objectRef.resource == 'users'"
+	queryCmd := exec.Command(datumctl, "activity", "audit",
+		"--platform-wide",
+		"--start-time", "now-365d",
+		"--end-time", "now",
+		"--filter", filter,
+		"--all-pages",
+		"-o", "json",
+	)
+	output, err := queryCmd.Output()
+	if err != nil {
+		return nil
+	}
+	var result auditQueryResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil
+	}
+	deleted := make(map[string]struct{})
+	for _, event := range result.Items {
+		if event.ObjectRef.Name != "" {
+			deleted[event.ObjectRef.Name] = struct{}{}
+		}
+	}
+	return deleted
 }
 
 func runActiveUsers(cmd *cobra.Command, args []string) error {
@@ -163,6 +186,7 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 
 	// Query audit logs for the last ~30 days (covers 4 weeks + current week)
 	// Filter for write operations by real users (excluding system accounts)
+	// Note: personal-project-* and personal-org-* resources are filtered client-side below
 	filter := "verb in ['create', 'update', 'patch'] && user.username.contains('system:') == false && user.uid != '' && objectRef.apiGroup in ['activity.miloapis.com'] == false"
 	queryArgs := []string{"activity", "audit",
 		"--platform-wide",
@@ -207,14 +231,19 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 	weekUsers[currentWeek] = make(map[string]struct{})
 
 	type userActivity struct {
-		UID          string
+		Username     string
 		LastActivity time.Time
 	}
-	userActivities := make(map[string]userActivity) // username -> activity info
+	userActivities := make(map[string]userActivity) // uid -> activity info
 
 	for _, event := range result.Items {
-		username := event.User.Username
-		if username == "" {
+		uid := event.User.UID
+		if uid == "" {
+			continue
+		}
+
+		// Exclude auto-provisioned personal resources
+		if strings.HasPrefix(event.ObjectRef.Name, "personal-project-") || strings.HasPrefix(event.ObjectRef.Name, "personal-org-") {
 			continue
 		}
 
@@ -224,14 +253,12 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		// Track last activity time for this user
-		if event.User.UID != "" {
-			existing := userActivities[username]
-			if existing.LastActivity.IsZero() || t.After(existing.LastActivity) {
-				userActivities[username] = userActivity{
-					UID:          event.User.UID,
-					LastActivity: t,
-				}
+		// Track last activity time for this user (keyed by UID to deduplicate)
+		existing := userActivities[uid]
+		if existing.LastActivity.IsZero() || t.After(existing.LastActivity) {
+			userActivities[uid] = userActivity{
+				Username:     event.User.Username,
+				LastActivity: t,
 			}
 		}
 
@@ -239,7 +266,7 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 
 		// Only count if this week is in our range
 		if users, ok := weekUsers[weekStart]; ok {
-			users[username] = struct{}{}
+			users[uid] = struct{}{}
 		}
 	}
 
@@ -259,9 +286,25 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, "Looking up user details...")
 		allUserDetails := fetchAllUsers(datumctl)
 
-		for username := range allUsers {
-			activity := userActivities[username]
-			uid := activity.UID
+		// Collect UIDs not found in the current user list
+		var unresolvedUIDs []string
+		for uid := range allUsers {
+			if allUserDetails == nil {
+				unresolvedUIDs = append(unresolvedUIDs, uid)
+			} else if _, ok := allUserDetails[uid]; !ok {
+				unresolvedUIDs = append(unresolvedUIDs, uid)
+			}
+		}
+
+		// Check audit logs for deletion events for unresolved UIDs
+		var deletedUsers map[string]struct{}
+		if len(unresolvedUIDs) > 0 {
+			fmt.Fprintln(os.Stderr, "Checking audit logs for deleted users...")
+			deletedUsers = fetchDeletedUsers(datumctl)
+		}
+
+		for uid := range allUsers {
+			activity := userActivities[uid]
 			lastActivity := activity.LastActivity
 
 			var info userInfo
@@ -273,10 +316,15 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 					continue
 				}
 			}
-			// Fall back to audit event data
+			// User not in current list — check if we can confirm deletion
+			name := "[deleted?]"
+			if _, wasDeleted := deletedUsers[uid]; wasDeleted {
+				name = "[deleted]"
+			}
 			activeUserList = append(activeUserList, userInfo{
 				UID:          uid,
-				Email:        username,
+				Name:         name,
+				Email:        activity.Username,
 				LastActivity: lastActivity,
 			})
 		}
