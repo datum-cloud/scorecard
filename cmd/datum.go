@@ -137,6 +137,35 @@ func fetchAllUsers(datumctl string) map[string]userInfo {
 	return users
 }
 
+// fetchDeletedUsers queries audit logs for user delete events and returns a set of deleted UIDs.
+// The objectRef.name on a user delete event is the user's resource name (their UID).
+func fetchDeletedUsers(datumctl string) map[string]struct{} {
+	filter := "verb == 'delete' && objectRef.resource == 'users'"
+	queryCmd := exec.Command(datumctl, "activity", "audit",
+		"--platform-wide",
+		"--start-time", "now-365d",
+		"--end-time", "now",
+		"--filter", filter,
+		"--all-pages",
+		"-o", "json",
+	)
+	output, err := queryCmd.Output()
+	if err != nil {
+		return nil
+	}
+	var result auditQueryResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil
+	}
+	deleted := make(map[string]struct{})
+	for _, event := range result.Items {
+		if event.ObjectRef.Name != "" {
+			deleted[event.ObjectRef.Name] = struct{}{}
+		}
+	}
+	return deleted
+}
+
 func runActiveUsers(cmd *cobra.Command, args []string) error {
 	outputJSON, _ := cmd.Flags().GetBool("json")
 	limit, _ := cmd.Flags().GetInt("limit")
@@ -257,6 +286,23 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, "Looking up user details...")
 		allUserDetails := fetchAllUsers(datumctl)
 
+		// Collect UIDs not found in the current user list
+		var unresolvedUIDs []string
+		for uid := range allUsers {
+			if allUserDetails == nil {
+				unresolvedUIDs = append(unresolvedUIDs, uid)
+			} else if _, ok := allUserDetails[uid]; !ok {
+				unresolvedUIDs = append(unresolvedUIDs, uid)
+			}
+		}
+
+		// Check audit logs for deletion events for unresolved UIDs
+		var deletedUsers map[string]struct{}
+		if len(unresolvedUIDs) > 0 {
+			fmt.Fprintln(os.Stderr, "Checking audit logs for deleted users...")
+			deletedUsers = fetchDeletedUsers(datumctl)
+		}
+
 		for uid := range allUsers {
 			activity := userActivities[uid]
 			lastActivity := activity.LastActivity
@@ -270,9 +316,14 @@ func runActiveUsers(cmd *cobra.Command, args []string) error {
 					continue
 				}
 			}
-			// Fall back to audit event data
+			// User not in current list — check if we can confirm deletion
+			name := "[deleted?]"
+			if _, wasDeleted := deletedUsers[uid]; wasDeleted {
+				name = "[deleted]"
+			}
 			activeUserList = append(activeUserList, userInfo{
 				UID:          uid,
+				Name:         name,
 				Email:        activity.Username,
 				LastActivity: lastActivity,
 			})
