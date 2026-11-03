@@ -2,6 +2,8 @@ module github.com/datum-cloud/scorecard
 
 go 1.23
 
+toolchain go1.27.3
+
 require github.com/spf13/cobra v1.8.1
 
 require (
